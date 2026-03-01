@@ -140,6 +140,22 @@
       # kernel = pkgs.linuxPackages_latest.kernel;
       kernel = pkgs.linuxPackages_rt_6_1.kernel;
 
+      axi-transport = pkgs.stdenv.mkDerivation rec {
+        pname = "axi";
+        version = "0.0.1";
+
+        src = ./src;
+
+        hardeningDisable = [ "pic" "format" ];
+        nativeBuildInputs = kernel.moduleBuildDependencies;
+
+        makeFlags = [
+          "KERNELRELEASE=${kernel.modDirVersion}"
+          "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
+          "INSTALL_MOD_PATH=$(out)"
+        ];
+      };
+
       initrd = pkgs.runCommand "build-initrd" {
         buildInputs = [ pkgs.cpio pkgs.gzip pkgs.fakeroot ];
       } ''
@@ -149,15 +165,19 @@
           fakeroot cp -rf ${pkgs.pkgsStatic.busybox}/* .
           fakeroot rm -f default.script
 
-          fakeroot cp -rf ${kernel.modules}/*  .
+          # fakeroot cp -rf ${kernel.modules}/*  .
 
           # system-v init script
           fakeroot cp -rf ${init} etc/init.d/rcS
-          fakeroot cp -rf ${s10-modules} etc/init.d/S10modules
+          # fakeroot cp -rf ${s10-modules} etc/init.d/S10modules
           # fakeroot cp -rf ${s99-graphic} etc/init.d/S99graphic
 
           fakeroot cp -rf ${meter}/* .
-          fakeroot cp -rf ${meter-lvgl}/* .
+          # fakeroot cp -rf ${meter-lvgl}/* .
+
+          set -x
+          fakeroot cp -rf ${axi-transport}/* .
+          set +x
 
           find . -print0 | cpio --owner=root:root --null -ov --format=newc \
             | gzip -9 > $out
@@ -166,8 +186,17 @@
 
       runvm = pkgs.writeShellScriptBin "runvm" ''
         ${pkgs.qemu}/bin/qemu-system-x86_64 -enable-kvm -nographic \
-          -smp 4 -m 4G -kernel ${kernel}/bzImage \
-          -initrd ${initrd} -append "console=ttyS0 rdinit=/linuxrc"
+          -smp 4 -m 512M -kernel ${kernel}/bzImage \
+          -object memory-backend-file,id=shm1,size=512M,mem-path=/dev/shm/shm1,share=on \
+          -machine memory-backend=shm1 \
+          -initrd ${initrd} -append "console=ttyS0 rdinit=/linuxrc cma=128M"
+      '';
+
+      runvm-arm64 = pkgs.writeShellScriptBin "runvm" ''
+        ${pkgs.qemu}/bin/qemu-system-aarch64 \
+          -object memory-backend-file,id=shm1,size=512M,mem-path=/dev/shm/shm1,share=on \
+          -machine memory-backend=shm1 \
+          -bios ${pkgs.pkgsCross.aarch64-multiplatform.ubootQemuAarch64}/u-boot.bin
       '';
 
       runvm-with-xen = pkgs.writeShellScriptBin "runvm" ''
@@ -194,7 +223,9 @@
       packages.x86_64-linux.init = init;
       packages.x86_64-linux.runvm = runvm;
       packages.x86_64-linux.lvgl = lvgl;
+      packages.x86_64-linux.arm64 = runvm-arm64;
       packages.x86_64-linux.meter-lvgl = meter-lvgl;
+      packages.x86_64-linux.axi = axi-transport;
       packages.x86_64-linux.runvm-with-xen = runvm-with-xen;
 
       packages.x86_64-linux.default = self.packages.x86_64-linux.runvm-with-xen;
