@@ -189,7 +189,8 @@
           -smp 4 -m 512M -kernel ${kernel}/bzImage \
           -object memory-backend-file,id=shm1,size=512M,mem-path=/dev/shm/shm1,share=on \
           -machine memory-backend=shm1 \
-          -initrd ${initrd} -append "console=ttyS0 loglevel=7 mem=448M virtio_mmio.device=1K@0x1c000000:10 rdinit=/linuxrc cma=16M@0x1d000000"
+          -initrd ${initrd} \
+          -append "console=ttyS0 loglevel=7 mem=448M rdinit=/linuxrc"
       '';
 
       runvm-arm64 = pkgs.writeShellScriptBin "runvm" ''

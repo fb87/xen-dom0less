@@ -17,12 +17,16 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("S Dao <dsi1hc@bosch.com>");
 MODULE_DESCRIPTION("The smallest possible hello world kernel module");
 
-static void     *virtio_regs_virt;
-static dma_addr_t virtio_regs_dma;
-static const size_t ALLOC_SIZE = 2 << 20;  // 2 MiB — should come from CMA
-
 static struct platform_device *virtio_mmio_pdev;
-static struct resource virtio_mmio_resources[1];
+static struct resource virtio_mmio_resources[] = {
+    {
+        .start  = 0x1c000000,
+        .end    = 0x1c000000 + 0x1000,
+        .flags  = IORESOURCE_MEM,
+    },
+    // no interrupt
+};
+static void __iomem *base;
 
 static int __init hello_init(void)
 {
@@ -31,7 +35,7 @@ static int __init hello_init(void)
 		.name         = "virtio-mmio",
 		.id           = -1,
 		.res          = virtio_mmio_resources,
-		.num_res      = 1,
+		.num_res      = ARRAY_SIZE(virtio_mmio_resources),
 		.dma_mask     = DMA_BIT_MASK(32),   // or 64
 	};
 
@@ -42,21 +46,6 @@ static int __init hello_init(void)
 		return PTR_ERR(virtio_mmio_pdev);
 	}
 
-	virtio_regs_virt = dma_alloc_coherent(&virtio_mmio_pdev->dev,
-			ALLOC_SIZE, &virtio_regs_dma, GFP_KERNEL);
-	if (!virtio_regs_virt) {
-		pr_err("dma_alloc_coherent failed for %zu bytes\n",
-				ALLOC_SIZE);
-		return -ENOMEM;
-	}
-
-	pr_info("CMA allocation OK!\n");
-	pr_info("  Virtual addr  : 0x%px\n", virtio_regs_virt);
-	pr_info("  Physical addr : 0x%px\n", virt_to_phys(virtio_regs_virt));
-	pr_info("  DMA addr      : %pad\n", &virtio_regs_dma);
-	pr_info("  Size          : %zu bytes (%zu MiB)\n", ALLOC_SIZE,
-			ALLOC_SIZE >> 20);
-
 	// to view the output, use:
 	//    xxd -s <phy addr> -l 128 /dev/shm/shm1
 	// cma phy addr must be used (as offset), cuz RAM starts at 0x0
@@ -64,25 +53,39 @@ static int __init hello_init(void)
 
 	printk(KERN_INFO "Platform device registered\n");
 
-	iowrite32(0x74726976,  virtio_regs_virt + 0x00);   // MagicValue = "virt"
-	iowrite32(2,           virtio_regs_virt + 0x04);   // Version = 2 (modern)
-	iowrite32(18,          virtio_regs_virt + 0x08);   // DeviceID = example: 18 = virtio-rng
-	iowrite32(0xfeedcafe,  virtio_regs_virt + 0x0c);   // VendorID = arbitrary
+	struct resource *res;
 
-	iowrite32(1 << 1,      virtio_regs_virt + 0x10);     // VIRTIO_F_VERSION_1
+	res = request_mem_region(0x1c000000, 0x1000, "vcam");
+	if (!res) {
+		pr_err("cannot claim region 0x1c000000\n");
+		return -EBUSY;
+	}
 
-	// Optional: some features
-	iowrite32(1 << 0,      virtio_regs_virt + 0x10);   // VIRTIO_F_ANY_LAYOUT or similar
+	/* now safe to map */
+	base = ioremap(0x1c000000ULL, 0x1000);
+	if (!base) {
+		release_mem_region(0x1c000000, 0x1000);
+		return -ENOMEM;
+	}
 
-	pr_info("Fake virtio-mmio registers written at virtual %px (phys 0x%llx)\n",
-			virtio_regs_virt, (u64)virtio_regs_dma);
+	// xxd -s 0x1c000000 -l 128 /dev/shm/shm1
+        // 1c000000: 7669 7274 0200 0000 0c00 0000 feca edfe  virt............
+        // 1c000010: 54ea 535c 2d5d 151c bd3e e3b7 45fc 6117  T.S\-]...>..E.a.
+        // 1c000020: 8254 aba3 0e0f 52f2 9a40 d7a5 b402 bcee  .T....R..@......
+        // 1c000030: e05c 7bdf d553 9f89 388b 47e8 547d e1a6  .\{..S..8.G.T}..
+        // 1c000040: 855e 6a13 9ac9 75ab fc63 78b1 c283 18a9  .^j...u..cx.....
+        // 1c000050: f4c4 eeab a871 4e72 560d b79c 9465 665d  .....qNrV....ef]
+        // 1c000060: fdb5 6dea 5170 e1b0 a375 3934 6b0b c5fa  ..m.Qp...u94k...
+        // 1c000070: 0100 0000 1586 5e9a b925 091e 7af5 64ae  ......^..%..z.d.
 
-	virtio_mmio_resources[0].start = virt_to_phys(virtio_regs_virt);
-	virtio_mmio_resources[0].end   = virt_to_phys(virtio_regs_virt) + ALLOC_SIZE;
-	virtio_mmio_resources[0].flags = IORESOURCE_MEM;
+	iowrite32(0x74726976,  base + 0x00);   // MagicValue = "virt"
+	iowrite32(2,           base + 0x04);   // Version = 2 (modern)
+	iowrite32(12,          base + 0x08);   // DeviceID = example
+	iowrite32(0xfeedcafe,  base + 0x0c);   // VendorID = arbitrary
 
-	pr_info("Dynamic virtio-mmio registered using CMA phys 0x%llx\n",
-			(u64)virt_to_phys(virtio_regs_virt));
+	// must unmap, otherwise virtio-mmio won't able to claim
+	iounmap(base);
+	release_mem_region(0x1c000000, 0x1000);
 
 	return 0;
 }
@@ -90,9 +93,6 @@ static int __init hello_init(void)
 static void __exit hello_exit(void)
 {
 	printk(KERN_INFO "Goodbye, cruel kernel world!\n");
-
-	dma_free_coherent(&virtio_mmio_pdev->dev, ALLOC_SIZE,
-                      virtio_regs_virt, virtio_regs_dma);
 }
 
 module_init(hello_init);
